@@ -1,0 +1,26 @@
+# Lightning Dictation - Required Dependencies
+# For Apple Silicon Macs (M1/M2/M3/M4)
+
+# Core ML framework for fast on-device transcription
+mlx>=0.30.0
+mlx-whisper>=0.4.0
+
+# Menu bar app framework
+rumps>=0.4.0
+
+# Audio recording
+sounddevice>=0.4.6
+
+# Keyboard shortcuts
+pynput>=1.7.6
+
+# Clipboard access
+pyperclip>=1.8.2
+
+# Numerical operations
+numpy>=1.24.0
+
+# macOS integration
+pyobjc-core>=10.0
+pyobjc-framework-Cocoa>=10.0
+pyobjc-framework-Quartz>=10.0

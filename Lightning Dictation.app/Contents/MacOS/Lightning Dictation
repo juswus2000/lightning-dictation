@@ -1,0 +1,33 @@
+#!/bin/bash
+
+# Lightning Dictation - First Run Helper
+# This script checks if the app is properly installed and guides the user if not.
+
+# Get the directory where the app is located
+APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+PROJECT_DIR="$(dirname "$APP_DIR")"
+
+# Add Homebrew to PATH
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+# Change to project directory
+cd "$PROJECT_DIR"
+
+# Check if virtual environment exists and has dependencies
+if [ ! -d "venv" ] || [ ! -f "venv/bin/python3" ]; then
+    # Show a dialog asking user to run the installer
+    osascript -e 'display dialog "Lightning Dictation needs to be set up first.\n\nPlease open Terminal and run:\n\ncd \"'"$PROJECT_DIR"'\" && ./install.sh\n\nThis will install all required dependencies." buttons {"Open Terminal", "Cancel"} default button "Open Terminal" with title "Lightning Dictation Setup Required" with icon caution' \
+    && open -a Terminal "$PROJECT_DIR"
+    exit 0
+fi
+
+# Check if dist version exists (built with py2app)
+if [ -d "$PROJECT_DIR/dist/Lightning Dictation.app" ]; then
+    # Launch the properly built version
+    open "$PROJECT_DIR/dist/Lightning Dictation.app"
+    exit 0
+fi
+
+# Fallback: Run directly (not recommended, process name will show as python)
+source venv/bin/activate
+exec python3 dictate_native.py

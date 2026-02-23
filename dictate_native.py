@@ -19,10 +19,28 @@ import time
 import subprocess
 import gc
 import json
+import logging
 import mlx.core as mx
 from Foundation import NSObject
 from PyObjCTools import AppHelper
 import objc
+
+# Set up logging for diagnosing intermittent freezes
+_log_path = os.path.expanduser("~/Desktop/dictation_debug.log")
+logging.basicConfig(
+    filename=_log_path,
+    level=logging.DEBUG,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+# Keep log file from growing forever: truncate if > 1MB
+try:
+    if os.path.exists(_log_path) and os.path.getsize(_log_path) > 1_000_000:
+        with open(_log_path, 'w') as f:
+            f.write("--- Log truncated ---\n")
+except:
+    pass
+log = logging.getLogger("dictation")
 
 # Ensure ffmpeg is in PATH for mlx_whisper
 os.environ['PATH'] = '/opt/homebrew/bin:/usr/local/bin:' + os.environ.get('PATH', '')
@@ -190,13 +208,24 @@ class DictationMenuBarApp(rumps.App):
         self.cancel_transcription = threading.Event()
         self.consecutive_failures = 0
         self.max_consecutive_failures = 3
+        self._transcription_started_at = None
 
         # Double-tap Command key detection
         self.last_cmd_press_time = 0
         self.double_tap_window = 0.3  # 300ms window for double tap
         self.cmd_is_pressed = False
+        self._cmd_pressed_at = 0  # timestamp for staleness detection
         self.last_toggle_time = 0
         self.min_toggle_interval = 0.5  # Minimum 500ms between toggles
+
+        # Cooldown after transcription timeout to prevent zombie GPU conflicts
+        self._transcription_cooldown_until = 0
+
+        # Keyboard listener health tracking
+        self._last_key_event_time = time.time()
+        self._listener_instance = None  # reference to current keyboard.Listener
+        self._listener_lock = threading.Lock()
+        self._listener_restart_count = 0
 
         # Menu items
         self.status_item = rumps.MenuItem("Status: Ready")
@@ -253,6 +282,12 @@ class DictationMenuBarApp(rumps.App):
 
         # Start keyboard listener in background
         threading.Thread(target=self.start_keyboard_listener, daemon=True).start()
+
+        # Start listener health monitor (detects silent listener death)
+        threading.Thread(target=self._listener_health_monitor, daemon=True).start()
+
+        # Register for macOS sleep/wake notifications
+        self._register_wake_observer()
 
         # Auto-download default model on first launch for better UX
         threading.Thread(target=self._auto_download_model_if_needed, daemon=True).start()
@@ -613,6 +648,11 @@ class DictationMenuBarApp(rumps.App):
 
     def start_recording(self):
         """Start recording audio - called from keyboard listener thread"""
+        # Check cooldown after a transcription timeout (prevents zombie GPU conflicts)
+        if time.time() < self._transcription_cooldown_until:
+            self.update_ui(status="Status: Cooling down after timeout...")
+            return
+
         with self.state_lock:
             if self.is_recording or self.is_transcribing:
                 return
@@ -625,14 +665,22 @@ class DictationMenuBarApp(rumps.App):
         # Play start sound in background
         threading.Thread(target=lambda: self.play_sound('pluck1'), daemon=True).start()
 
-        # Start audio stream
-        self.stream = sd.InputStream(
-            samplerate=self.sample_rate,
-            channels=1,
-            dtype='float32',
-            callback=self.audio_callback
-        )
-        self.stream.start()
+        # Start audio stream - wrapped in try/except to handle device errors
+        try:
+            self.stream = sd.InputStream(
+                samplerate=self.sample_rate,
+                channels=1,
+                dtype='float32',
+                callback=self.audio_callback
+            )
+            self.stream.start()
+        except Exception:
+            with self.state_lock:
+                self.is_recording = False
+                self.audio_data = []
+            self.stream = None
+            self.update_ui(title="❌", status="Status: Mic error - check audio device")
+            self._delayed_ready(3)
 
     def stop_recording(self):
         """Stop recording - called from keyboard listener thread"""
@@ -693,6 +741,7 @@ class DictationMenuBarApp(rumps.App):
             if self.is_transcribing:
                 return
             self.is_transcribing = True
+            self._transcription_started_at = time.time()
             self.cancel_transcription.clear()
 
         temp_path = None
@@ -783,6 +832,15 @@ class DictationMenuBarApp(rumps.App):
 
             if timed_out:
                 self.consecutive_failures += 1
+
+                # Force-clear MLX model to free GPU resources held by zombie thread
+                try:
+                    from mlx_whisper.transcribe import ModelHolder
+                    ModelHolder.model = None
+                    ModelHolder.model_path = None
+                except:
+                    pass
+
                 if self.consecutive_failures >= self.max_consecutive_failures:
                     self.update_ui(title="⚠️", status="Status: Multiple timeouts - try restarting app")
                 else:
@@ -794,6 +852,8 @@ class DictationMenuBarApp(rumps.App):
                 except:
                     pass
 
+                # Cooldown to prevent cascading GPU resource conflicts from zombie thread
+                self._transcription_cooldown_until = time.time() + 10
                 self._delayed_ready(2)
                 return
 
@@ -874,6 +934,7 @@ class DictationMenuBarApp(rumps.App):
 
             with self.state_lock:
                 self.is_transcribing = False
+                self._transcription_started_at = None
 
     def _delayed_ready(self, seconds):
         """Update UI to ready state after a delay, in background"""
@@ -909,12 +970,28 @@ class DictationMenuBarApp(rumps.App):
 
     def on_press(self, key):
         """Handle key press events"""
+        self._last_key_event_time = time.time()
         try:
             if self._is_hotkey_match(key):
+                # Watchdog: auto-reset if stuck transcribing too long
+                if self.is_transcribing and self._transcription_started_at:
+                    stuck_duration = time.time() - self._transcription_started_at
+                    if stuck_duration > self.transcription_timeout + 30:
+                        with self.state_lock:
+                            self.is_transcribing = False
+                            self.cancel_transcription.set()
+                            self._transcription_started_at = None
+                        self.update_ui(title="🎙️", status="Status: Ready (auto-recovered)")
+
                 if self.cmd_is_pressed:
-                    return
+                    # If the key has been "pressed" for > 1.5s, macOS dropped the release event
+                    if time.time() - self._cmd_pressed_at > 1.5:
+                        self.cmd_is_pressed = False
+                    else:
+                        return
 
                 self.cmd_is_pressed = True
+                self._cmd_pressed_at = time.time()
                 current_time = time.time()
 
                 if self.recording_mode == "push_to_talk":
@@ -940,11 +1017,12 @@ class DictationMenuBarApp(rumps.App):
                     else:
                         self.last_cmd_press_time = current_time
 
-        except AttributeError:
+        except Exception:
             pass
 
     def on_release(self, key):
         """Handle key release events"""
+        self._last_key_event_time = time.time()
         try:
             if self._is_hotkey_match(key):
                 self.cmd_is_pressed = False
@@ -953,13 +1031,111 @@ class DictationMenuBarApp(rumps.App):
                 if self.recording_mode == "push_to_talk":
                     if self.is_recording:
                         self.stop_recording()
-        except AttributeError:
+        except Exception:
             pass
 
+    def _register_wake_observer(self):
+        """Register for macOS sleep/wake notifications to recover the keyboard listener"""
+        try:
+            from AppKit import NSWorkspace, NSNotificationCenter
+            workspace = NSWorkspace.sharedWorkspace()
+            nc = workspace.notificationCenter()
+
+            # NSWorkspaceDidWakeNotification fires when Mac wakes from sleep
+            nc.addObserverForName_object_queue_usingBlock_(
+                "NSWorkspaceDidWakeNotification",
+                None,
+                None,
+                lambda notification: self._on_system_wake()
+            )
+            # Also listen for screen unlock (covers display sleep without full sleep)
+            nc.addObserverForName_object_queue_usingBlock_(
+                "NSWorkspaceScreensDidWakeNotification",
+                None,
+                None,
+                lambda notification: self._on_system_wake()
+            )
+            log.info("Registered sleep/wake observer")
+        except Exception as e:
+            log.warning(f"Failed to register wake observer: {e}")
+
+    def _on_system_wake(self):
+        """Called when macOS wakes from sleep - restart keyboard listener"""
+        log.info("System wake detected, scheduling listener restart")
+        # Small delay to let the system fully wake up
+        threading.Thread(target=self._delayed_wake_recovery, daemon=True).start()
+
+    def _delayed_wake_recovery(self):
+        """Recover after system wake with a small delay"""
+        time.sleep(2)  # Let system stabilize
+        log.info("Performing wake recovery")
+
+        # Reset stale key state (key events are lost across sleep)
+        self.cmd_is_pressed = False
+        self.last_cmd_press_time = 0
+
+        # Force restart the keyboard listener
+        self._force_restart_listener("system_wake")
+
+    def _force_restart_listener(self, reason="unknown"):
+        """Force-stop and restart the keyboard listener"""
+        with self._listener_lock:
+            self._listener_restart_count += 1
+            count = self._listener_restart_count
+            log.info(f"Force-restarting keyboard listener (reason={reason}, count={count})")
+
+            listener = self._listener_instance
+            if listener:
+                try:
+                    listener.stop()
+                except Exception:
+                    pass
+                self._listener_instance = None
+
+        # The start_keyboard_listener loop will automatically create a new one
+
+    def _listener_health_monitor(self):
+        """Periodically check if the keyboard listener is still receiving events"""
+        # Wait for initial startup
+        time.sleep(30)
+        log.info("Listener health monitor started")
+
+        while True:
+            time.sleep(60)  # Check every 60 seconds
+
+            with self._listener_lock:
+                listener = self._listener_instance
+
+            if listener is None:
+                continue
+
+            # If no key events for 10+ minutes AND the listener thread thinks it's alive,
+            # the CGEventTap has likely gone stale. Force restart.
+            idle_time = time.time() - self._last_key_event_time
+            if idle_time > 600:  # 10 minutes without any key event
+                # On macOS, keyboard events fire very frequently from all apps.
+                # 10 minutes of zero events means the listener is dead.
+                log.warning(f"No key events for {int(idle_time)}s, force-restarting listener")
+                self._force_restart_listener("health_check_stale")
+                # Reset the timer so we don't spam restarts
+                self._last_key_event_time = time.time()
+
     def start_keyboard_listener(self):
-        """Start listening for keyboard events"""
-        with keyboard.Listener(on_press=self.on_press, on_release=self.on_release) as listener:
-            listener.join()
+        """Start listening for keyboard events - auto-restarts on failure"""
+        while True:
+            try:
+                log.info("Starting keyboard listener")
+                with keyboard.Listener(on_press=self.on_press, on_release=self.on_release) as listener:
+                    with self._listener_lock:
+                        self._listener_instance = listener
+                    listener.join()
+                log.warning("Keyboard listener exited normally (unexpected)")
+            except Exception as e:
+                log.warning(f"Keyboard listener crashed: {e}")
+            finally:
+                with self._listener_lock:
+                    self._listener_instance = None
+            time.sleep(1)  # Brief pause before restart
 
 
 if __name__ == "__main__":

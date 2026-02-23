@@ -31,7 +31,7 @@ Open Terminal and run:
 
 ```bash
 git clone https://github.com/juswus2000/lightning-dictation.git
-cd Lightning-Dictation
+cd lightning-dictation
 ./install.sh
 ```
 
@@ -81,15 +81,30 @@ Click the 🎙️ icon to access:
 
 ## Models
 
+### English Only (default)
+
+| Model | Speed | Accuracy | RAM Usage |
+|-------|-------|----------|-----------|
+| Tiny | Fastest | Good | ~40MB |
+| Base | Fast | Better | ~140MB |
+| **Small** | **Balanced** | **Great** | **~480MB** |
+| Medium | Slower | Best | ~1.5GB |
+
+**Small English is the default** - a good balance of speed and accuracy for most users.
+
+### Multilingual (50+ languages, auto-detect)
+
 | Model | Speed | Accuracy | RAM Usage |
 |-------|-------|----------|-----------|
 | Tiny | Fastest | Good | ~40MB |
 | Base | Fast | Better | ~140MB |
 | Small | Balanced | Great | ~480MB |
-| Medium | Slower | Best | ~1.5GB |
-| Large | Slowest | Highest | ~3GB |
+| Medium | Slower | High | ~1.5GB |
+| **Distil Large v3** | **Fast** | **Excellent** | **~2GB** |
+| Turbo | Fast | Great | ~1.6GB |
+| Large v3 | Slowest | Highest | ~3GB |
 
-The default model (Medium English) offers the best balance for most users.
+Distil Large v3 is the default for multilingual mode.
 
 ## Troubleshooting
 
@@ -104,7 +119,13 @@ The default model (Medium English) offers the best balance for most users.
 ### Transcription is slow or stuck
 - Click the menu bar icon and select "Reset App State"
 - Try a smaller model if you have limited RAM
+- Check `~/Desktop/dictation_debug.log` for diagnostic info
 - Restart the app
+
+### App stops responding after sleep/wake
+- The app automatically recovers the keyboard listener after sleep — just wait a few seconds
+- If it doesn't recover, click "Reset App State" from the menu bar icon
+- Check `~/Desktop/dictation_debug.log` for wake recovery logs
 
 ### "Lightning Dictation quit unexpectedly"
 - Grant both Microphone and Accessibility permissions
@@ -117,7 +138,7 @@ If you prefer to install manually:
 ```bash
 # Clone the repository
 git clone https://github.com/juswus2000/lightning-dictation.git
-cd Lightning-Dictation
+cd lightning-dictation
 
 # Create virtual environment
 python3 -m venv venv
@@ -145,6 +166,9 @@ rm -rf ~/path/to/Lightning-Dictation
 
 # Remove settings file
 rm ~/.lightning_dictation_settings.json
+
+# Remove debug log (if present)
+rm ~/Desktop/dictation_debug.log
 
 # Remove cached AI models (optional, frees ~3GB)
 rm -rf ~/.cache/huggingface/hub/models--mlx-community--whisper-*

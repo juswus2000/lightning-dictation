@@ -13,8 +13,8 @@ OPTIONS = {
         'CFBundleName': 'Lightning Dictation',
         'CFBundleDisplayName': 'Lightning Dictation',
         'CFBundleIdentifier': 'com.local.lightningdictation',
-        'CFBundleVersion': '1.1.0',
-        'CFBundleShortVersionString': '1.1.0',
+        'CFBundleVersion': '1.2.0',
+        'CFBundleShortVersionString': '1.2.0',
         'LSUIElement': False,
         'NSMicrophoneUsageDescription': 'Lightning Dictation needs microphone access to transcribe your speech.',
         'NSAppleEventsUsageDescription': 'Lightning Dictation needs accessibility access to type transcribed text.',
@@ -25,17 +25,17 @@ OPTIONS = {
         'mlx',
         'sounddevice',
         'numpy',
-        'pynput',
         'pyperclip',
         'huggingface_hub',
     ],
     'includes': [
         'Foundation',
         'AppKit',
+        'Quartz',
         'objc',
         'PyObjCTools',
     ],
-    'iconfile': 'Lightning Dictation.app/Contents/Resources/AppIcon.icns',
+    'iconfile': 'AppIcon.icns',
 }
 
 setup(

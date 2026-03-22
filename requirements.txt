@@ -11,9 +11,6 @@ rumps>=0.4.0
 # Audio recording
 sounddevice>=0.4.6
 
-# Keyboard shortcuts
-pynput>=1.7.6
-
 # Clipboard access
 pyperclip>=1.8.2
 

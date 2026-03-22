@@ -43,17 +43,16 @@ That's it! The installer will:
 
 ### Grant Permissions
 
-After installation, you need to grant permissions:
+The app will automatically prompt for the permissions it needs on first launch:
 
-1. **Microphone Access**
-   - The app will request this automatically on first use
-   - Click "Allow" when prompted
+1. **Accessibility** (Required - prompted automatically)
+   - Needed to detect the ⌘ key globally and auto-paste text
+   - The app triggers the macOS permission prompt on first launch
+   - Grant access, then **restart the app**
+   - If the prompt doesn't appear: **System Settings** → **Privacy & Security** → **Accessibility** → add Lightning Dictation
 
-2. **Accessibility Access** (Required for auto-paste)
-   - Open **System Settings** → **Privacy & Security** → **Accessibility**
-   - Click the **+** button
-   - Navigate to and select **Lightning Dictation**
-   - Make sure the toggle is **ON**
+2. **Microphone** (prompted automatically on first recording)
+   - Click "Allow" when macOS asks
 
 3. **Menu Bar Access** (macOS 26 Tahoe only)
    - Open **System Settings** → **Menu Bar**
@@ -112,8 +111,13 @@ Distil Large v3 is the default for multilingual mode.
 - **macOS 26+**: Go to System Settings → Menu Bar and enable Lightning Dictation
 - **Older macOS**: Check if too many menu bar icons are hiding it behind the notch
 
+### Double-tap ⌘ doesn't work in other apps
+- Ensure **Accessibility** permission is granted (the app prompts on first launch)
+- After granting permission, **restart the app** for it to take effect
+- Check: System Settings → Privacy & Security → Accessibility → Lightning Dictation is ON
+
 ### Text doesn't paste automatically
-- Ensure Accessibility permission is granted (see installation steps)
+- Ensure Accessibility permission is granted (see above)
 - The text is always copied to clipboard - you can paste manually with ⌘V
 
 ### Transcription is slow or stuck
@@ -121,11 +125,6 @@ Distil Large v3 is the default for multilingual mode.
 - Try a smaller model if you have limited RAM
 - Check `~/Desktop/dictation_debug.log` for diagnostic info
 - Restart the app
-
-### App stops responding after sleep/wake
-- The app automatically recovers the keyboard listener after sleep — just wait a few seconds
-- If it doesn't recover, click "Reset App State" from the menu bar icon
-- Check `~/Desktop/dictation_debug.log` for wake recovery logs
 
 ### "Lightning Dictation quit unexpectedly"
 - Grant both Microphone and Accessibility permissions

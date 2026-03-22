@@ -10,7 +10,6 @@ import numpy as np
 import tempfile
 import wave
 import pyperclip
-from pynput import keyboard
 import mlx_whisper
 import threading
 import os
@@ -23,7 +22,15 @@ import logging
 import mlx.core as mx
 from Foundation import NSObject
 from PyObjCTools import AppHelper
+from AppKit import NSEvent
+from Quartz import (
+    kCGEventFlagMaskCommand,
+    kCGEventFlagMaskControl,
+    kCGEventFlagMaskAlternate,
+    kCGEventFlagMaskSecondaryFn,
+)
 import objc
+import ctypes
 
 # Set up logging for diagnosing intermittent freezes
 _log_path = os.path.expanduser("~/Desktop/dictation_debug.log")
@@ -165,26 +172,26 @@ class DictationMenuBarApp(rumps.App):
             self.current_model_key = default_model
         self.model_name = self.available_models[self.current_model_key]["name"]
 
-        # Hotkey settings
+        # Hotkey settings - uses Quartz CGEvent flag masks for NSEvent monitoring
         self.available_hotkeys = {
             "double_cmd": {
                 "name": "Double-tap Command",
-                "key": keyboard.Key.cmd,
+                "flag_mask": kCGEventFlagMaskCommand,
                 "description": "Double-tap ⌘ Command"
             },
             "double_ctrl": {
                 "name": "Double-tap Control",
-                "key": keyboard.Key.ctrl,
+                "flag_mask": kCGEventFlagMaskControl,
                 "description": "Double-tap ⌃ Control"
             },
             "double_option": {
                 "name": "Double-tap Option",
-                "key": keyboard.Key.alt,
+                "flag_mask": kCGEventFlagMaskAlternate,
                 "description": "Double-tap ⌥ Option"
             },
             "double_fn": {
                 "name": "Double-tap Fn",
-                "key": keyboard.Key.f13,  # Fn key detection workaround
+                "flag_mask": kCGEventFlagMaskSecondaryFn,
                 "description": "Double-tap Fn"
             }
         }
@@ -220,12 +227,6 @@ class DictationMenuBarApp(rumps.App):
 
         # Cooldown after transcription timeout to prevent zombie GPU conflicts
         self._transcription_cooldown_until = 0
-
-        # Keyboard listener health tracking
-        self._last_key_event_time = time.time()
-        self._listener_instance = None  # reference to current keyboard.Listener
-        self._listener_lock = threading.Lock()
-        self._listener_restart_count = 0
 
         # Menu items
         self.status_item = rumps.MenuItem("Status: Ready")
@@ -280,17 +281,185 @@ class DictationMenuBarApp(rumps.App):
             rumps.MenuItem("Reset App State", callback=self.reset_app_state)
         ]
 
-        # Start keyboard listener in background
-        threading.Thread(target=self.start_keyboard_listener, daemon=True).start()
-
-        # Start listener health monitor (detects silent listener death)
-        threading.Thread(target=self._listener_health_monitor, daemon=True).start()
+        # Set up NSEvent monitors for global hotkey detection
+        # Global monitor: catches events when OTHER apps are focused
+        # Local monitor: catches events when THIS app is focused
+        self._setup_nsevent_monitors()
 
         # Register for macOS sleep/wake notifications
         self._register_wake_observer()
 
+        # Check permissions and guide user on first launch
+        threading.Thread(target=self._check_permissions_on_launch, daemon=True).start()
+
         # Auto-download default model on first launch for better UX
         threading.Thread(target=self._auto_download_model_if_needed, daemon=True).start()
+
+    def _setup_nsevent_monitors(self):
+        """Set up NSEvent global and local monitors for modifier key detection.
+
+        This replaces pynput's keyboard.Listener with native macOS event monitoring,
+        which works reliably even when other applications have focus.
+        """
+        NSFlagsChangedMask = 1 << 12  # NSEventMaskFlagsChanged
+
+        # Global monitor - fires when OTHER apps have focus
+        NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
+            NSFlagsChangedMask,
+            self._handle_global_flags_event
+        )
+
+        # Local monitor - fires when THIS app has focus
+        NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
+            NSFlagsChangedMask,
+            self._handle_local_flags_event
+        )
+
+        log.info("NSEvent global+local monitors installed for modifier keys")
+
+    def _handle_global_flags_event(self, event):
+        """Handle modifier key changes when other apps are focused (global monitor)."""
+        try:
+            flags = event.modifierFlags()
+            self._handle_flags_changed(flags)
+        except Exception as e:
+            log.warning(f"Global flags handler error: {e}")
+
+    def _handle_local_flags_event(self, event):
+        """Handle modifier key changes when this app is focused (local monitor).
+        Must return the event to pass it through."""
+        try:
+            flags = event.modifierFlags()
+            self._handle_flags_changed(flags)
+        except Exception as e:
+            log.warning(f"Local flags handler error: {e}")
+        return event
+
+    def _handle_flags_changed(self, flags):
+        """Core modifier key press/release detection.
+
+        Called from both global and local NSEvent monitors.
+        Detects whether the configured hotkey modifier is pressed or released
+        by checking if its flag mask is set in the current modifier flags.
+        """
+        hotkey_config = self.available_hotkeys.get(self.current_hotkey)
+        if not hotkey_config:
+            return
+
+        mask = hotkey_config['flag_mask']
+        is_pressed = bool(flags & mask)
+
+        if is_pressed and not self.cmd_is_pressed:
+            # Modifier key was just pressed
+            self._on_hotkey_press()
+        elif not is_pressed and self.cmd_is_pressed:
+            # Modifier key was just released
+            self._on_hotkey_release()
+
+    def _check_permissions_on_launch(self):
+        """Check and prompt for required macOS permissions on first launch."""
+        time.sleep(1.5)  # Let app finish launching
+
+        trusted = self._is_accessibility_trusted(prompt=True)
+
+        if not trusted:
+            log.info("Accessibility permission not yet granted - showing guide")
+            AppHelper.callAfter(self._show_permission_dialog)
+        else:
+            log.info("Accessibility permission already granted")
+
+    def _is_accessibility_trusted(self, prompt=False):
+        """Check if app has Accessibility permission. If prompt=True, show macOS system prompt."""
+        try:
+            # Load AXIsProcessTrustedWithOptions from ApplicationServices
+            lib = ctypes.cdll.LoadLibrary(
+                '/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices'
+            )
+
+            if prompt:
+                # Use AXIsProcessTrustedWithOptions to trigger macOS permission prompt
+                func = lib.AXIsProcessTrustedWithOptions
+                func.restype = ctypes.c_bool
+                func.argtypes = [ctypes.c_void_p]
+
+                # Create options dict: {kAXTrustedCheckOptionPrompt: true}
+                from Foundation import NSDictionary
+                options = NSDictionary.dictionaryWithObject_forKey_(
+                    True, "AXTrustedCheckOptionPrompt"
+                )
+                return func(objc.pyobjc_id(options))
+            else:
+                # Simple check without prompt
+                func = lib.AXIsProcessTrusted
+                func.restype = ctypes.c_bool
+                return func()
+        except Exception as e:
+            log.warning(f"Accessibility permission check failed: {e}")
+            return True  # Assume OK if check fails
+
+    def _show_permission_dialog(self):
+        """Show dialog guiding user to grant required permissions."""
+        rumps.alert(
+            title="Permissions Required",
+            message=(
+                "Lightning Dictation needs Accessibility permission to:\n\n"
+                "• Detect the ⌘ Command key double-tap globally\n"
+                "• Auto-paste transcribed text into any app\n\n"
+                "macOS should have shown a permission prompt.\n"
+                "If not, open:\n"
+                "  System Settings → Privacy & Security → Accessibility\n\n"
+                "Add and enable Lightning Dictation, then restart the app.\n\n"
+                "Microphone access will be requested when you first record."
+            )
+        )
+
+    def _on_hotkey_press(self):
+        """Handle hotkey press - implements double-tap detection and recording toggle."""
+        # Watchdog: auto-reset if stuck transcribing too long
+        if self.is_transcribing and self._transcription_started_at:
+            stuck_duration = time.time() - self._transcription_started_at
+            if stuck_duration > self.transcription_timeout + 30:
+                with self.state_lock:
+                    self.is_transcribing = False
+                    self.cancel_transcription.set()
+                    self._transcription_started_at = None
+                self.update_ui(title="🎙️", status="Status: Ready (auto-recovered)")
+
+        self.cmd_is_pressed = True
+        self._cmd_pressed_at = time.time()
+        current_time = time.time()
+
+        if self.recording_mode == "push_to_talk":
+            # Push-to-talk: start recording immediately on press
+            if current_time - self.last_toggle_time >= self.min_toggle_interval:
+                self.last_toggle_time = current_time
+                if not self.is_recording and not self.is_transcribing:
+                    self.start_recording()
+        else:
+            # Toggle mode: double-tap to start/stop
+            if current_time - self.last_cmd_press_time < self.double_tap_window:
+                if current_time - self.last_toggle_time >= self.min_toggle_interval:
+                    self.last_toggle_time = current_time
+
+                    if self.is_transcribing:
+                        self.cancel_current_transcription()
+                    elif self.is_recording:
+                        self.stop_recording()
+                    else:
+                        self.start_recording()
+
+                self.last_cmd_press_time = 0
+            else:
+                self.last_cmd_press_time = current_time
+
+    def _on_hotkey_release(self):
+        """Handle hotkey release - used for push-to-talk mode."""
+        self.cmd_is_pressed = False
+
+        # Push-to-talk: stop recording on release
+        if self.recording_mode == "push_to_talk":
+            if self.is_recording:
+                self.stop_recording()
 
     def is_model_downloaded(self, model_name):
         """Check if a model is already downloaded in the Hugging Face cache"""
@@ -943,99 +1112,8 @@ class DictationMenuBarApp(rumps.App):
             self.update_ui(title="🎙️", status="Status: Ready")
         threading.Thread(target=do_delay, daemon=True).start()
 
-    def _is_hotkey_match(self, key):
-        """Check if the pressed key matches the current hotkey setting"""
-        hotkey_config = self.available_hotkeys.get(self.current_hotkey)
-        if not hotkey_config:
-            return False
-
-        target_key = hotkey_config['key']
-
-        # Handle Command key (cmd, cmd_l, cmd_r)
-        if target_key == keyboard.Key.cmd:
-            return key in (keyboard.Key.cmd, keyboard.Key.cmd_l, keyboard.Key.cmd_r)
-        # Handle Control key (ctrl, ctrl_l, ctrl_r)
-        elif target_key == keyboard.Key.ctrl:
-            return key in (keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r)
-        # Handle Option/Alt key (alt, alt_l, alt_r, alt_gr)
-        elif target_key == keyboard.Key.alt:
-            return key in (keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r, keyboard.Key.alt_gr)
-        # Handle Fn key (detected via special handling)
-        elif target_key == keyboard.Key.f13:
-            # Fn key on Mac is tricky - it often shows as no key or as a modifier
-            # We'll try to detect it via keyboard.KeyCode
-            return hasattr(key, 'vk') and key.vk == 63  # vk 63 is Fn on Mac
-        else:
-            return key == target_key
-
-    def on_press(self, key):
-        """Handle key press events"""
-        self._last_key_event_time = time.time()
-        try:
-            if self._is_hotkey_match(key):
-                # Watchdog: auto-reset if stuck transcribing too long
-                if self.is_transcribing and self._transcription_started_at:
-                    stuck_duration = time.time() - self._transcription_started_at
-                    if stuck_duration > self.transcription_timeout + 30:
-                        with self.state_lock:
-                            self.is_transcribing = False
-                            self.cancel_transcription.set()
-                            self._transcription_started_at = None
-                        self.update_ui(title="🎙️", status="Status: Ready (auto-recovered)")
-
-                if self.cmd_is_pressed:
-                    # If the key has been "pressed" for > 1.5s, macOS dropped the release event
-                    if time.time() - self._cmd_pressed_at > 1.5:
-                        self.cmd_is_pressed = False
-                    else:
-                        return
-
-                self.cmd_is_pressed = True
-                self._cmd_pressed_at = time.time()
-                current_time = time.time()
-
-                if self.recording_mode == "push_to_talk":
-                    # Push-to-talk: start recording immediately on press
-                    if current_time - self.last_toggle_time >= self.min_toggle_interval:
-                        self.last_toggle_time = current_time
-                        if not self.is_recording and not self.is_transcribing:
-                            self.start_recording()
-                else:
-                    # Toggle mode: double-tap to start/stop
-                    if current_time - self.last_cmd_press_time < self.double_tap_window:
-                        if current_time - self.last_toggle_time >= self.min_toggle_interval:
-                            self.last_toggle_time = current_time
-
-                            if self.is_transcribing:
-                                self.cancel_current_transcription()
-                            elif self.is_recording:
-                                self.stop_recording()
-                            else:
-                                self.start_recording()
-
-                        self.last_cmd_press_time = 0
-                    else:
-                        self.last_cmd_press_time = current_time
-
-        except Exception:
-            pass
-
-    def on_release(self, key):
-        """Handle key release events"""
-        self._last_key_event_time = time.time()
-        try:
-            if self._is_hotkey_match(key):
-                self.cmd_is_pressed = False
-
-                # Push-to-talk: stop recording on release
-                if self.recording_mode == "push_to_talk":
-                    if self.is_recording:
-                        self.stop_recording()
-        except Exception:
-            pass
-
     def _register_wake_observer(self):
-        """Register for macOS sleep/wake notifications to recover the keyboard listener"""
+        """Register for macOS sleep/wake notifications to reset key state"""
         try:
             from AppKit import NSWorkspace, NSNotificationCenter
             workspace = NSWorkspace.sharedWorkspace()
@@ -1060,82 +1138,11 @@ class DictationMenuBarApp(rumps.App):
             log.warning(f"Failed to register wake observer: {e}")
 
     def _on_system_wake(self):
-        """Called when macOS wakes from sleep - restart keyboard listener"""
-        log.info("System wake detected, scheduling listener restart")
-        # Small delay to let the system fully wake up
-        threading.Thread(target=self._delayed_wake_recovery, daemon=True).start()
-
-    def _delayed_wake_recovery(self):
-        """Recover after system wake with a small delay"""
-        time.sleep(2)  # Let system stabilize
-        log.info("Performing wake recovery")
-
+        """Called when macOS wakes from sleep - reset key state"""
+        log.info("System wake detected, resetting key state")
         # Reset stale key state (key events are lost across sleep)
         self.cmd_is_pressed = False
         self.last_cmd_press_time = 0
-
-        # Force restart the keyboard listener
-        self._force_restart_listener("system_wake")
-
-    def _force_restart_listener(self, reason="unknown"):
-        """Force-stop and restart the keyboard listener"""
-        with self._listener_lock:
-            self._listener_restart_count += 1
-            count = self._listener_restart_count
-            log.info(f"Force-restarting keyboard listener (reason={reason}, count={count})")
-
-            listener = self._listener_instance
-            if listener:
-                try:
-                    listener.stop()
-                except Exception:
-                    pass
-                self._listener_instance = None
-
-        # The start_keyboard_listener loop will automatically create a new one
-
-    def _listener_health_monitor(self):
-        """Periodically check if the keyboard listener is still receiving events"""
-        # Wait for initial startup
-        time.sleep(30)
-        log.info("Listener health monitor started")
-
-        while True:
-            time.sleep(60)  # Check every 60 seconds
-
-            with self._listener_lock:
-                listener = self._listener_instance
-
-            if listener is None:
-                continue
-
-            # If no key events for 10+ minutes AND the listener thread thinks it's alive,
-            # the CGEventTap has likely gone stale. Force restart.
-            idle_time = time.time() - self._last_key_event_time
-            if idle_time > 600:  # 10 minutes without any key event
-                # On macOS, keyboard events fire very frequently from all apps.
-                # 10 minutes of zero events means the listener is dead.
-                log.warning(f"No key events for {int(idle_time)}s, force-restarting listener")
-                self._force_restart_listener("health_check_stale")
-                # Reset the timer so we don't spam restarts
-                self._last_key_event_time = time.time()
-
-    def start_keyboard_listener(self):
-        """Start listening for keyboard events - auto-restarts on failure"""
-        while True:
-            try:
-                log.info("Starting keyboard listener")
-                with keyboard.Listener(on_press=self.on_press, on_release=self.on_release) as listener:
-                    with self._listener_lock:
-                        self._listener_instance = listener
-                    listener.join()
-                log.warning("Keyboard listener exited normally (unexpected)")
-            except Exception as e:
-                log.warning(f"Keyboard listener crashed: {e}")
-            finally:
-                with self._listener_lock:
-                    self._listener_instance = None
-            time.sleep(1)  # Brief pause before restart
 
 
 if __name__ == "__main__":

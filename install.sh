@@ -100,7 +100,7 @@ pip install -r requirements.txt --quiet
 
 echo -e "${GREEN}✓ Dependencies installed${NC}"
 
-# Create the proper app bundle using py2app
+# Build the app bundle using py2app
 echo ""
 echo -e "${YELLOW}Building the app...${NC}"
 
@@ -115,21 +115,20 @@ python setup.py py2app --alias --quiet 2>/dev/null || python setup.py py2app --a
 
 echo -e "${GREEN}✓ App built successfully${NC}"
 
-# Copy app to Applications folder (optional)
+# Install to Applications folder
 echo ""
-echo -e "${YELLOW}Would you like to install the app to your Applications folder? (y/n)${NC}"
+echo -e "${YELLOW}Would you like to install to your Applications folder? (recommended) (y/n)${NC}"
 read -r response
 if [[ "$response" =~ ^[Yy]$ ]]; then
     # Remove old version if exists
     rm -rf "/Applications/Lightning Dictation.app" 2>/dev/null || true
 
-    # Create a wrapper app in Applications that points to our dist version
     cp -R "dist/Lightning Dictation.app" "/Applications/Lightning Dictation.app"
-    echo -e "${GREEN}✓ App installed to Applications folder${NC}"
+    echo -e "${GREEN}✓ Installed to Applications folder${NC}"
     APP_PATH="/Applications/Lightning Dictation.app"
 else
     APP_PATH="$SCRIPT_DIR/dist/Lightning Dictation.app"
-    echo -e "${BLUE}App location: $APP_PATH${NC}"
+    echo -e "${BLUE}App built at: $APP_PATH${NC}"
 fi
 
 echo ""
@@ -137,28 +136,14 @@ echo -e "${BLUE}============================================================${NC
 echo -e "${GREEN}            Installation Complete!${NC}"
 echo -e "${BLUE}============================================================${NC}"
 echo ""
-echo -e "${YELLOW}IMPORTANT - Grant Permissions:${NC}"
+echo -e "${YELLOW}FIRST LAUNCH - What to expect:${NC}"
 echo ""
-echo "Before using the app, you need to grant two permissions:"
+echo "  1. The app will ask for ${BLUE}Accessibility${NC} permission"
+echo "     → This lets it detect ⌘ key globally & auto-paste text"
+echo "     → Grant access, then restart the app"
 echo ""
-echo "1. ${BLUE}Microphone Access${NC} - For recording your voice"
-echo "   → The app will ask for this when you first record"
-echo ""
-echo "2. ${BLUE}Accessibility Access${NC} - For pasting transcribed text"
-echo "   → Go to: System Settings → Privacy & Security → Accessibility"
-echo "   → Click '+' and add: Lightning Dictation"
-echo "   → Make sure the toggle is ON"
-echo ""
-echo "3. ${BLUE}Menu Bar Access${NC} (macOS 26+ only)"
-echo "   → Go to: System Settings → Menu Bar"
-echo "   → Find 'Lightning Dictation' and enable it"
-echo ""
-echo -e "${BLUE}============================================================${NC}"
-echo ""
-echo -e "${GREEN}To start the app:${NC}"
-echo "   open \"$APP_PATH\""
-echo ""
-echo -e "${GREEN}Or double-click 'Lightning Dictation' in your Applications folder${NC}"
+echo "  2. On your first recording, macOS will ask for ${BLUE}Microphone${NC} access"
+echo "     → Click Allow"
 echo ""
 echo -e "${BLUE}Usage:${NC}"
 echo "   • Double-tap ⌘ Command key to start recording"
@@ -176,5 +161,5 @@ if [[ "$launch_response" =~ ^[Yy]$ ]]; then
 fi
 
 echo ""
-echo -e "${GREEN}Enjoy Lightning Dictation!${NC}"
+echo -e "${GREEN}Enjoy Lightning Dictation! 🎙️${NC}"
 echo ""

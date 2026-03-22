@@ -618,11 +618,16 @@ class DictationMenuBarApp(rumps.App):
 
     @run_on_main_thread
     def update_ui(self, title=None, status=None):
-        """Thread-safe UI update - always runs on main thread"""
-        if title is not None:
-            self.title = title
-        if status is not None:
-            self.status_item.title = status
+        """Thread-safe UI update - dispatches to main thread via AppHelper"""
+        def _do_update():
+            if title is not None:
+                self.title = title
+            if status is not None:
+                self.status_item.title = status
+        if threading.current_thread() is threading.main_thread():
+            _do_update()
+        else:
+            AppHelper.callAfter(_do_update)
 
     def change_hotkey(self, hotkey_key):
         """Change the hotkey for recording"""
@@ -1052,7 +1057,7 @@ class DictationMenuBarApp(rumps.App):
                     ], check=True, timeout=2)
                 except Exception as paste_error:
                     # Log paste error but don't crash - text is still in clipboard
-                    error_log_path = os.path.expanduser("~/Desktop/dictation_error.log")
+                    error_log_path = os.path.join(os.path.expanduser("~/Library/Logs"), "LightningDictation_error.log")
                     try:
                         with open(error_log_path, 'a') as f:
                             f.write(f"\n\n=== Paste error at {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
@@ -1078,7 +1083,7 @@ class DictationMenuBarApp(rumps.App):
 
             # Log error
             import traceback
-            error_log_path = os.path.expanduser("~/Desktop/dictation_error.log")
+            error_log_path = os.path.join(os.path.expanduser("~/Library/Logs"), "LightningDictation_error.log")
             try:
                 with open(error_log_path, 'a') as f:
                     f.write(f"\n\n=== Error at {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")

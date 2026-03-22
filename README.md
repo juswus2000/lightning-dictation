@@ -114,7 +114,8 @@ Distil Large v3 is the default for multilingual mode.
 ### Double-tap ⌘ doesn't work in other apps
 - Ensure **Accessibility** permission is granted (the app prompts on first launch)
 - After granting permission, **restart the app** for it to take effect
-- Check: System Settings → Privacy & Security → Accessibility → Lightning Dictation is ON
+- Check: System Settings → Privacy & Security → Accessibility
+- **Note:** The app may appear as **"Python"** in the permissions list — this is normal. Enable it.
 
 ### Text doesn't paste automatically
 - Ensure Accessibility permission is granted (see above)
@@ -123,7 +124,7 @@ Distil Large v3 is the default for multilingual mode.
 ### Transcription is slow or stuck
 - Click the menu bar icon and select "Reset App State"
 - Try a smaller model if you have limited RAM
-- Check `~/Desktop/dictation_debug.log` for diagnostic info
+- Check `~/Library/Logs/LightningDictation.log` for diagnostic info
 - Restart the app
 
 ### "Lightning Dictation quit unexpectedly"
@@ -154,20 +155,37 @@ python setup.py py2app --alias
 open "dist/Lightning Dictation.app"
 ```
 
+### App appears as "Python" in System Settings
+- This is normal — the app runs through Python under the hood
+- In **Accessibility** and **Input Monitoring** settings, look for **"Python"** and enable it
+- The app will still appear as "Lightning Dictation" in the menu bar and Launchpad
+
+### First launch takes a long time
+- On first launch, the app downloads the AI model (~500MB)
+- This requires internet — subsequent launches work offline
+- You'll see "Downloading model..." in the menu bar status
+
+## Important
+
+**Do not move or delete the `lightning-dictation` folder** after installing. The app in `/Applications` links back to this folder. If you need to relocate it, re-run `./install.sh` from the new location.
+
 ## Uninstall
 
 ```bash
 # Remove from Applications (if installed there)
 rm -rf "/Applications/Lightning Dictation.app"
 
+# Remove login item
+osascript -e 'tell application "System Events" to delete login item "Lightning Dictation"' 2>/dev/null
+
 # Remove the project folder
-rm -rf ~/path/to/Lightning-Dictation
+rm -rf ~/path/to/lightning-dictation
 
 # Remove settings file
 rm ~/.lightning_dictation_settings.json
 
 # Remove debug log (if present)
-rm ~/Desktop/dictation_debug.log
+rm ~/Library/Logs/LightningDictation.log
 
 # Remove cached AI models (optional, frees ~3GB)
 rm -rf ~/.cache/huggingface/hub/models--mlx-community--whisper-*

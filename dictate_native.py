@@ -33,7 +33,9 @@ import objc
 import ctypes
 
 # Set up logging for diagnosing intermittent freezes
-_log_path = os.path.expanduser("~/Desktop/dictation_debug.log")
+_log_dir = os.path.expanduser("~/Library/Logs")
+os.makedirs(_log_dir, exist_ok=True)
+_log_path = os.path.join(_log_dir, "LightningDictation.log")
 logging.basicConfig(
     filename=_log_path,
     level=logging.DEBUG,

@@ -131,6 +131,17 @@ else
     echo -e "${BLUE}App built at: $APP_PATH${NC}"
 fi
 
+# Add to login items so it starts on boot
+echo ""
+echo -e "${YELLOW}Would you like Lightning Dictation to start automatically on login? (recommended) (y/n)${NC}"
+read -r login_response
+if [[ "$login_response" =~ ^[Yy]$ ]]; then
+    # Remove any existing login item first
+    osascript -e 'tell application "System Events" to delete login item "Lightning Dictation"' 2>/dev/null || true
+    osascript -e "tell application \"System Events\" to make login item at end with properties {path:\"$APP_PATH\", hidden:false}"
+    echo -e "${GREEN}✓ Will start automatically on login${NC}"
+fi
+
 echo ""
 echo -e "${BLUE}============================================================${NC}"
 echo -e "${GREEN}            Installation Complete!${NC}"

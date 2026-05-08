@@ -51,6 +51,16 @@ except:
     pass
 log = logging.getLogger("dictation")
 
+# Capture unhandled exceptions (main + threads) so silent crashes leave a trace.
+def _log_unhandled(exc_type, exc_value, exc_tb):
+    log.error("Unhandled exception", exc_info=(exc_type, exc_value, exc_tb))
+
+sys.excepthook = _log_unhandled
+try:
+    threading.excepthook = lambda args: _log_unhandled(args.exc_type, args.exc_value, args.exc_traceback)
+except AttributeError:
+    pass
+
 # Ensure ffmpeg is in PATH for mlx_whisper
 os.environ['PATH'] = '/opt/homebrew/bin:/usr/local/bin:' + os.environ.get('PATH', '')
 
@@ -450,7 +460,9 @@ class DictationMenuBarApp(rumps.App):
                     else:
                         self.start_recording()
 
-                self.last_cmd_press_time = 0
+                    # Only reset on a successful toggle, so a debounce-blocked
+                    # double-tap doesn't lock the user out until they start over.
+                    self.last_cmd_press_time = 0
             else:
                 self.last_cmd_press_time = current_time
 
@@ -897,7 +909,12 @@ class DictationMenuBarApp(rumps.App):
                 path_or_hf_repo=model_name,
                 verbose=False,
                 word_timestamps=False,
-                initial_prompt="Hello, how are you? I'm doing well. Let's get started."
+                initial_prompt=(
+                    "Here are some technical terms that may appear: Seedance, "
+                    "Anthropic, Claude, MLX, Whisper, GitHub, macOS, Xcode, "
+                    "Python, JavaScript, TypeScript, API, LLM, GPU. "
+                    "Hello, how are you? I'm doing well. Let's get started."
+                )
             )
             result_queue.put(('success', result['text'].strip()))
         except Exception as e:

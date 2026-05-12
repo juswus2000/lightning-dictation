@@ -1181,12 +1181,22 @@ class DictationMenuBarApp(rumps.App):
 
                 # Paste using AppleScript (must use osascript, pynput crashes on macOS 26 from bg thread)
                 try:
-                    subprocess.run([
+                    paste_result = subprocess.run([
                         'osascript', '-e',
                         'tell application "System Events" to keystroke "v" using command down'
-                    ], check=True, timeout=2)
+                    ], capture_output=True, text=True, timeout=3)
+                    if paste_result.returncode == 0:
+                        log.info(f"paste OK (chars={len(text)})")
+                    else:
+                        log.error(f"paste FAILED rc={paste_result.returncode} stderr={paste_result.stderr.strip()!r} stdout={paste_result.stdout.strip()!r}")
+                        # Common cause: Accessibility permission was revoked
+                        # (e.g., after force-kill the bundle's TCC trust hash
+                        # changes). Surface this to the user in the menubar.
+                        if "not allowed assistive access" in paste_result.stderr.lower() or "1002" in paste_result.stderr or "1743" in paste_result.stderr:
+                            self.update_ui(title="🔒", status="Status: Accessibility denied — re-grant in System Settings")
+                            return
                 except Exception as paste_error:
-                    # Log paste error but don't crash - text is still in clipboard
+                    log.error(f"paste EXCEPTION: {paste_error}", exc_info=True)
                     error_log_path = os.path.join(os.path.expanduser("~/Library/Logs"), "LightningDictation_error.log")
                     try:
                         with open(error_log_path, 'a') as f:

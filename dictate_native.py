@@ -910,10 +910,12 @@ class DictationMenuBarApp(rumps.App):
                 verbose=False,
                 word_timestamps=False,
                 initial_prompt=(
-                    "Here are some technical terms that may appear: Seedance, "
-                    "Kling, Veo, Sora, Runway, Pika, Midjourney, ElevenLabs, "
-                    "Anthropic, Claude, MLX, Whisper, GitHub, macOS, Xcode, "
-                    "Python, JavaScript, TypeScript, API, LLM, GPU. "
+                    "Here are some names and technical terms that may appear: "
+                    "Aika and Nahreel are musicians I work with. "
+                    "Seedance, Kling, Veo, Sora, Runway, Pika, Midjourney, "
+                    "ElevenLabs, Anthropic, Claude, MLX, Whisper, GitHub, "
+                    "macOS, Xcode, Python, JavaScript, TypeScript, API, "
+                    "LLM, GPU. "
                     "Hello, how are you? I'm doing well. Let's get started."
                 )
             )

@@ -431,6 +431,7 @@ class DictationMenuBarApp(rumps.App):
         if self.is_transcribing and self._transcription_started_at:
             stuck_duration = time.time() - self._transcription_started_at
             if stuck_duration > self.transcription_timeout + 30:
+                log.warning(f"WATCHDOG fired in _on_hotkey_press: stuck transcribing for {stuck_duration:.1f}s — auto-resetting")
                 with self.state_lock:
                     self.is_transcribing = False
                     self.cancel_transcription.set()
@@ -903,6 +904,8 @@ class DictationMenuBarApp(rumps.App):
 
     def _run_transcription(self, temp_path, model_name, result_queue):
         """Run transcription in a separate thread"""
+        log.info(f"mlx_whisper.transcribe START model={model_name} thread={threading.current_thread().name}")
+        _t0 = time.time()
         try:
             result = mlx_whisper.transcribe(
                 temp_path,
@@ -919,8 +922,10 @@ class DictationMenuBarApp(rumps.App):
                     "Hello, how are you? I'm doing well. Let's get started."
                 )
             )
+            log.info(f"mlx_whisper.transcribe DONE in {time.time()-_t0:.1f}s chars={len(result.get('text','') or '')}")
             result_queue.put(('success', result['text'].strip()))
         except Exception as e:
+            log.error(f"mlx_whisper.transcribe FAILED after {time.time()-_t0:.1f}s: {e}", exc_info=True)
             result_queue.put(('error', str(e)))
 
     def cancel_current_transcription(self):
@@ -998,9 +1003,20 @@ class DictationMenuBarApp(rumps.App):
             timed_out = False
             download_timeout = 600 if model_needs_download else self.transcription_timeout  # 10 min for download
 
+            log.info(f"transcribe_and_paste waiting: audio_duration={audio_duration:.1f}s timeout={download_timeout}s download={model_needs_download}")
             while True:
                 # Check for cancellation
                 if self.cancel_transcription.is_set():
+                    log.warning(f"transcription CANCELED after {time.time()-start_time:.1f}s; mlx thread still running={transcription_thread.is_alive()}")
+                    # Set cooldown — the canceled mlx_whisper thread keeps running and
+                    # holds GPU resources; immediately starting a new transcribe can wedge.
+                    self._transcription_cooldown_until = time.time() + 5
+                    try:
+                        from mlx_whisper.transcribe import ModelHolder
+                        ModelHolder.model = None
+                        ModelHolder.model_path = None
+                    except:
+                        pass
                     self.update_ui(title="🎙️", status="Status: Cancelled")
                     self._delayed_ready(1)
                     return
@@ -1027,6 +1043,7 @@ class DictationMenuBarApp(rumps.App):
                     continue
 
             if timed_out:
+                log.warning(f"transcription TIMED OUT after {time.time()-start_time:.1f}s (limit={download_timeout}s); mlx thread alive={transcription_thread.is_alive()}; consecutive_failures will be {self.consecutive_failures + 1}")
                 self.consecutive_failures += 1
 
                 # Force-clear MLX model to free GPU resources held by zombie thread

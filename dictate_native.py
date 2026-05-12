@@ -767,11 +767,8 @@ class DictationMenuBarApp(rumps.App):
             self.stream = None
 
         if stream_to_close:
-            try:
-                stream_to_close.stop()
-                stream_to_close.close()
-            except:
-                pass
+            log.info("Reset: closing audio stream via watchdog")
+            self._close_stream_safely(stream_to_close)
 
         # Now reset all state variables
         with self.state_lock:
@@ -824,6 +821,33 @@ class DictationMenuBarApp(rumps.App):
             self.update_ui(status=f"Status: Max duration ({self.max_recording_duration // 60} min) reached")
             self._do_stop_recording()
 
+    def _close_stream_safely(self, stream):
+        """Close an audio stream without risking a CoreAudio HAL deadlock.
+
+        portaudio's stream.stop() (Pa_StopStream) can deadlock against
+        CoreAudio's HAL mutex when streams are recycled rapidly. We use
+        abort() (Pa_AbortStream, which discards pending buffers and returns
+        faster) and we do it in a worker thread guarded by a timeout, so a
+        wedged audio system can't freeze the whole app — we leak the stream
+        object instead, which the OS cleans up later.
+        """
+        if not stream:
+            return
+        def _do_close():
+            try:
+                stream.abort()
+            except Exception as e:
+                log.warning(f"stream.abort() failed: {e}")
+            try:
+                stream.close()
+            except Exception as e:
+                log.warning(f"stream.close() failed: {e}")
+        t = threading.Thread(target=_do_close, daemon=True, name="StreamCloser")
+        t.start()
+        t.join(timeout=2.0)
+        if t.is_alive():
+            log.error("Stream close timed out (CoreAudio deadlock) — leaking stream object to keep app alive")
+
     def play_sound(self, sound_name):
         """Play system sound for audio feedback"""
         try:
@@ -863,6 +887,7 @@ class DictationMenuBarApp(rumps.App):
                 callback=self.audio_callback
             )
             self.stream.start()
+            log.info("audio stream started")
         except Exception:
             with self.state_lock:
                 self.is_recording = False
@@ -890,14 +915,11 @@ class DictationMenuBarApp(rumps.App):
         # Play stop sound
         threading.Thread(target=lambda: self.play_sound('Pop'), daemon=True).start()
 
-        # Stop audio stream
-        if self.stream:
-            try:
-                self.stream.stop()
-                self.stream.close()
-            except:
-                pass
-            self.stream = None
+        # Stop audio stream (uses watchdog to avoid CoreAudio HAL deadlock)
+        stream_to_close = self.stream
+        self.stream = None
+        log.info(f"closing stream for transcription (recording duration={len(self.audio_data) * 1024 / self.sample_rate:.1f}s approx)")
+        self._close_stream_safely(stream_to_close)
 
         # Process audio
         self.transcribe_and_paste()

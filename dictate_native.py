@@ -848,6 +848,54 @@ class DictationMenuBarApp(rumps.App):
         if t.is_alive():
             log.error("Stream close timed out (CoreAudio deadlock) — leaking stream object to keep app alive")
 
+    # Common Whisper hallucinations on silent/near-silent audio.
+    # Source: empirical reports across the Whisper community — the model
+    # was trained on YouTube subtitles so end-of-video phrases dominate.
+    # Match is case-insensitive, punctuation-stripped, and tolerates
+    # repetition ("Thanks for watching! Thanks for watching!" → still filtered).
+    _HALLUCINATION_PHRASES = frozenset({
+        "thanks for watching",
+        "thank you for watching",
+        "thanks for watching everyone",
+        "please subscribe",
+        "like and subscribe",
+        "like comment and subscribe",
+        "subscribe to my channel",
+        "music",
+        "applause",
+        "bye",
+        "thank you",
+        "you",
+        "okay",
+    })
+
+    def _is_whisper_hallucination(self, text):
+        """Return True if text appears to be a Whisper hallucination."""
+        import re
+        # Normalize: lowercase, strip punctuation, collapse whitespace
+        normalized = re.sub(r"[^\w\s]", " ", text.lower())
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        if not normalized:
+            return True
+        # Collapse repeated runs ("thanks for watching thanks for watching ...")
+        # into one instance by deduplicating consecutive identical phrases.
+        words = normalized.split()
+        # Try matching the whole thing as a single phrase first
+        if normalized in self._HALLUCINATION_PHRASES:
+            return True
+        # Try splitting into repeats of a phrase. For each candidate phrase
+        # in our set, check if the normalized text is just that phrase
+        # repeated N times.
+        for phrase in self._HALLUCINATION_PHRASES:
+            phrase_words = phrase.split()
+            n = len(phrase_words)
+            if n == 0 or len(words) % n != 0:
+                continue
+            reps = len(words) // n
+            if words == phrase_words * reps:
+                return True
+        return False
+
     def play_sound(self, sound_name):
         """Play system sound for audio feedback"""
         try:
@@ -918,7 +966,7 @@ class DictationMenuBarApp(rumps.App):
         # Stop audio stream (uses watchdog to avoid CoreAudio HAL deadlock)
         stream_to_close = self.stream
         self.stream = None
-        log.info(f"closing stream for transcription (recording duration={len(self.audio_data) * 1024 / self.sample_rate:.1f}s approx)")
+        log.info(f"closing stream for transcription ({len(self.audio_data)} audio chunks captured)")
         self._close_stream_safely(stream_to_close)
 
         # Process audio
@@ -991,7 +1039,7 @@ class DictationMenuBarApp(rumps.App):
             rms = float(np.sqrt(np.mean(audio_array.astype(np.float32) ** 2)))
             peak = float(np.max(np.abs(audio_array)))
             log.info(f"audio level: rms={rms:.4f} peak={peak:.4f} duration={len(audio_array)/self.sample_rate:.1f}s")
-            if rms < 0.005 and peak < 0.05:
+            if rms < 0.006 and peak < 0.07:
                 self.update_ui(title="🎙️", status="Status: No speech detected")
                 self._delayed_ready(2)
                 return
@@ -1112,6 +1160,16 @@ class DictationMenuBarApp(rumps.App):
                     temp_path = None
                 except:
                     pass
+
+            # Whisper hallucination filter. The model was trained on huge
+            # amounts of YouTube data, so on silent/near-silent input it
+            # falls back to common end-of-video phrases. Filter them out.
+            if text and self._is_whisper_hallucination(text):
+                log.warning(f"filtered Whisper hallucination: {text!r}")
+                self.consecutive_failures = 0
+                self.update_ui(title="🎙️", status="Status: No speech detected")
+                self._delayed_ready(2)
+                return
 
             if text:
                 self.consecutive_failures = 0

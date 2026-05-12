@@ -912,14 +912,15 @@ class DictationMenuBarApp(rumps.App):
                 path_or_hf_repo=model_name,
                 verbose=False,
                 word_timestamps=False,
+                # NOTE: do not end the prompt with a conversational sentence —
+                # Whisper hallucinates the prompt back verbatim when given
+                # silent/near-silent audio. Keep it to a noun list.
                 initial_prompt=(
-                    "Here are some names and technical terms that may appear: "
-                    "Aika and Nahreel are musicians I work with. "
-                    "Seedance, Kling, Veo, Sora, Runway, Pika, Midjourney, "
-                    "ElevenLabs, Anthropic, Claude, MLX, Whisper, GitHub, "
-                    "macOS, Xcode, Python, JavaScript, TypeScript, API, "
-                    "LLM, GPU. "
-                    "Hello, how are you? I'm doing well. Let's get started."
+                    "Names and technical terms that may appear: "
+                    "Aika, Nahreel, Seedance, Kling, Veo, Sora, Runway, Pika, "
+                    "Midjourney, ElevenLabs, Anthropic, Claude, MLX, Whisper, "
+                    "GitHub, macOS, Xcode, Python, JavaScript, TypeScript, "
+                    "API, LLM, GPU."
                 )
             )
             log.info(f"mlx_whisper.transcribe DONE in {time.time()-_t0:.1f}s chars={len(result.get('text','') or '')}")
@@ -958,6 +959,18 @@ class DictationMenuBarApp(rumps.App):
             # Check if audio is too short
             if len(audio_array) < self.sample_rate * 0.3:
                 self.update_ui(title="🎙️", status="Status: Audio too short")
+                self._delayed_ready(2)
+                return
+
+            # Silence check: skip transcription when there's no real speech.
+            # Whisper hallucinates the initial_prompt back as output when fed
+            # silence, so an RMS gate is the cleanest way to avoid the bogus
+            # "Hello, how are you?" paste after an accidental double-tap.
+            rms = float(np.sqrt(np.mean(audio_array.astype(np.float32) ** 2)))
+            peak = float(np.max(np.abs(audio_array)))
+            log.info(f"audio level: rms={rms:.4f} peak={peak:.4f} duration={len(audio_array)/self.sample_rate:.1f}s")
+            if rms < 0.005 and peak < 0.05:
+                self.update_ui(title="🎙️", status="Status: No speech detected")
                 self._delayed_ready(2)
                 return
 

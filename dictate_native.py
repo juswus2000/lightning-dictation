@@ -1166,6 +1166,10 @@ class DictationMenuBarApp(rumps.App):
         """Update UI to ready state after a delay, in background"""
         def do_delay():
             time.sleep(seconds)
+            # Race guard: if a new recording/transcription started while we
+            # were sleeping, don't clobber its 🔴/⏳ icon with 🎙️.
+            if self.is_recording or self.is_transcribing:
+                return
             self.update_ui(title="🎙️", status="Status: Ready")
         threading.Thread(target=do_delay, daemon=True).start()
 
